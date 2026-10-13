@@ -309,6 +309,8 @@ ifeq ($(USE_LIST_SO),1)
 	LIB_LFLAGS += $(LLIST)
 endif
 
+PKGCONFIG_PATH ?= $(LIBDEV_PATH)/pkgconfig
+
 # Use PKG_CONFIG_PATH
 TEST_LFLAGS = $(LFLAGS) $(shell pkg-config --cflags --libs check)
 ifdef ANY_MSYS
@@ -592,7 +594,7 @@ install_lib: $(LIB_PATH)/$(SHARED_LIB_NAME_FULL) $(LIB_PATH)/$(SHARED_LIB_NAME_S
 	@echo "Installed library"
 
 .PHONY: install_lib-dev
-install_lib-dev: $(LIB_PATH)/$(SHARED_LIB_NAME_FULL) $(LIB_PATH)/$(SHARED_LIB_NAME_SO) $(LIBDEV_PATH)/$(SHARED_LIB_NAME_SHORT) $(LIBDEV_PATH)/liboidc-agent.a install_includes
+install_lib-dev: $(LIB_PATH)/$(SHARED_LIB_NAME_FULL) $(LIB_PATH)/$(SHARED_LIB_NAME_SO) $(LIBDEV_PATH)/$(SHARED_LIB_NAME_SHORT) $(LIBDEV_PATH)/liboidc-agent.a install_includes install_pkgconfig
 	@echo "Installed library dev"
 
 endif
@@ -860,6 +862,7 @@ uninstall_lib:
 uninstall_libdev: uninstall_lib
 	@$(rm) $(LIB_PATH)/$(SHARED_LIB_NAME_SHORT)
 	@$(rm) -r $(INCLUDE_PATH)/oidc-agent/
+	@$(rm) $(PKGCONFIG_PATH)/liboidc-agent.pc
 	@echo "Uninstalled liboidc-agent-dev"
 
 ifndef ANY_MSYS
@@ -911,6 +914,32 @@ $(MANDIR)/$(TOKENSH).1: $(MANDIR) $(BINDIR)/$(TOKENSH) $(SRCDIR)/h2m/$(TOKENSH).
 endif
 
 # Library
+
+# Package metadata is generated from the same version and install paths as the
+# library. Regenerate on each request, including command-line path overrides.
+PC_PRIVATE_LIBS = -lm
+ifeq ($(USE_CJSON_SO),1)
+PC_PRIVATE_LIBS += $(LCJSON)
+endif
+ifeq ($(USE_LIST_SO),1)
+PC_PRIVATE_LIBS += $(LLIST)
+endif
+
+.PHONY: pkgconfig install_pkgconfig force_pkgconfig
+pkgconfig: $(APILIB)/liboidc-agent.pc
+install_pkgconfig: $(PKGCONFIG_PATH)/liboidc-agent.pc
+force_pkgconfig:
+
+$(APILIB)/liboidc-agent.pc: lib/liboidc-agent.pc.in VERSION Makefile force_pkgconfig | $(APILIB)
+	@sed -e 's|@PREFIX@|$(PREFIX)|g' \
+	     -e 's|@LIBDIR@|$(LIBDEV_PATH)|g' \
+	     -e 's|@INCLUDEDIR@|$(INCLUDE_PATH)|g' \
+	     -e 's|@VERSION@|$(VERSION)|g' \
+	     -e 's|@PRIVATE_LIBS@|$(PC_PRIVATE_LIBS)|g' $< >$@
+
+$(PKGCONFIG_PATH)/liboidc-agent.pc: $(APILIB)/liboidc-agent.pc
+	@install -d -m 755 "$(@D)"
+	@install -p -m 644 $< $@
 
 $(APILIB)/liboidc-agent.a: create_obj_dir_structure $(APILIB) $(API_OBJECTS)
 	@ar -crs $@ $(API_OBJECTS)
@@ -1106,6 +1135,10 @@ $(TESTBINDIR)/test: $(TESTBINDIR) $(TESTSRCDIR)/main.c $(TEST_SOURCES) $(GENERAL
 .PHONY: test
 test: $(TESTBINDIR)/test
 	@$<
+
+.PHONY: test-token-response-expiry
+test-token-response-expiry:
+	$(MAKE) -f test/token_response_expiry/Makefile ROOT="$(CURDIR)" test
 
 .PHONY: testdocu
 testdocu: $(BINDIR)/$(AGENT) $(BINDIR)/$(GEN) $(BINDIR)/$(ADD) $(BINDIR)/$(CLIENT) gitbook/$(GEN)/options.md gitbook/$(AGENT)/options.md gitbook/$(ADD)/options.md gitbook/$(CLIENT)/options.md gitbook/$(TOKENSH)/options.md

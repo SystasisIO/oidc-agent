@@ -1,0 +1,11 @@
+prefix=@PREFIX@
+libdir=@LIBDIR@
+includedir=@INCLUDEDIR@
+
+Name: liboidc-agent
+Description: Client library for communicating with oidc-agent
+Version: @VERSION@
+Requires.private: libsodium
+Libs: -L${libdir} -loidc-agent
+Libs.private: @PRIVATE_LIBS@
+Cflags: -I${includedir}
