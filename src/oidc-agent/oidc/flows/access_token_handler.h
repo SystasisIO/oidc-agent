@@ -8,10 +8,15 @@
 #include "utils/oidc_error.h"
 #include "wrapper/list.h"
 
-char*        getAccessTokenUsingRefreshFlow(struct oidc_account* account,
-                                            time_t min_valid_period, const char* scope,
-                                            const char*    audience,
-                                            struct ipcPipe pipes);
+/* Internal result: access_token is always caller-owned, even on a cache hit. */
+struct access_token_result {
+  char*         access_token;
+  unsigned long expires_at;
+};
+
+struct access_token_result getAccessTokenUsingRefreshFlow(
+    struct oidc_account* account, time_t min_valid_period, const char* scope,
+    const char* audience, struct ipcPipe pipes);
 char*        getIdToken(struct oidc_account* p, const char* scope,
                         struct ipcPipe pipes);
 oidc_error_t getAccessTokenUsingPasswordFlow(struct oidc_account* account,

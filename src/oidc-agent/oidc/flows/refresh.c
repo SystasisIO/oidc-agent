@@ -73,7 +73,10 @@ char* generateRefreshPostData(const struct oidc_account* a, const char* scopeIn,
 
 char* refreshFlow(unsigned char return_mode, struct oidc_account* p,
                   const char* scope, const char* audience,
-                  struct ipcPipe pipes) {
+                  struct ipcPipe pipes, unsigned long* expires_at) {
+  if (expires_at) {
+    *expires_at = 0;
+  }
   agent_log(DEBUG, "Doing RefreshFlow\n");
   char* data = generateRefreshPostData(p, scope, audience);
   if (data == NULL) {
@@ -92,10 +95,10 @@ char* refreshFlow(unsigned char return_mode, struct oidc_account* p,
   }
 
   setErrorContext(account_getTokenEndpoint(p), scope);
-  char* access_token = parseTokenResponse(
+  char* access_token = parseTokenResponseWithExpiry(
       return_mode |
           TOKENPARSEMODE_SAVE_AT_IF(!strValid(scope) && !strValid(audience)),
-      res, p, pipes, 1);
+      res, p, pipes, 1, expires_at);
   clearErrorContext();
   secFree(res);
   return access_token;

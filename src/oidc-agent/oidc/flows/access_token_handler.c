@@ -11,15 +11,27 @@
 #include "utils/listUtils.h"
 #include "utils/string/stringUtils.h"
 
-char* tryRefreshFlow(struct oidc_account* p, const char* scope,
-                     const char* audience, struct ipcPipe pipes) {
+static struct access_token_result tryRefreshFlow(
+    struct oidc_account* p, const char* scope, const char* audience,
+    struct ipcPipe pipes) {
+  struct access_token_result result = {NULL, 0};
   agent_log(DEBUG, "Trying Refresh Flow");
   if (!account_refreshTokenIsValid(p)) {
     agent_log(ERROR, "No refresh token found");
     oidc_errno = OIDC_ENOREFRSH;
-    return NULL;
+    return result;
   }
-  return refreshFlow(TOKENPARSEMODE_RETURN_AT, p, scope, audience, pipes);
+  char* token = refreshFlow(TOKENPARSEMODE_RETURN_AT, p, scope, audience,
+                            pipes, &result.expires_at);
+  if (token) {
+    result.access_token = !strValid(scope) && !strValid(audience)
+                              ? oidc_strcopy(token)
+                              : token;
+  }
+  if (result.access_token == NULL) {
+    result.expires_at = 0;
+  }
+  return result;
 }
 
 char* getIdToken(struct oidc_account* p, const char* scope,
@@ -29,7 +41,7 @@ char* getIdToken(struct oidc_account* p, const char* scope,
     oidc_errno = OIDC_ENOREFRSH;
     return NULL;
   }
-  return refreshFlow(TOKENPARSEMODE_RETURN_ID, p, scope, NULL, pipes);
+  return refreshFlow(TOKENPARSEMODE_RETURN_ID, p, scope, NULL, pipes, NULL);
 }
 
 /** @fn oidc_error_t tryPasswordFlow(struct oidc_account* p)
@@ -65,15 +77,20 @@ int tokenIsValidForSeconds(const struct oidc_account* p,
   return expires_at - now > 0 && expires_at - now > min_valid_period;
 }
 
-char* getAccessTokenUsingRefreshFlow(struct oidc_account* account,
-                                     time_t min_valid_period, const char* scope,
-                                     const char*    audience,
-                                     struct ipcPipe pipes) {
-  if (scope == NULL && audience == NULL &&
+struct access_token_result getAccessTokenUsingRefreshFlow(
+    struct oidc_account* account, time_t min_valid_period, const char* scope,
+    const char* audience, struct ipcPipe pipes) {
+  if (!strValid(scope) && !strValid(audience) &&
       min_valid_period != FORCE_NEW_TOKEN &&
       strValid(account_getAccessToken(account)) &&
       tokenIsValidForSeconds(account, min_valid_period)) {
-    return account_getAccessToken(account);
+    struct access_token_result result = {
+        oidc_strcopy(account_getAccessToken(account)),
+        account_getTokenExpiresAt(account)};
+    if (result.access_token == NULL) {
+      result.expires_at = 0;
+    }
+    return result;
   }
   agent_log(DEBUG, "No access token found that is valid long enough");
   return tryRefreshFlow(account, scope, audience, pipes);

@@ -110,19 +110,17 @@ void _handleGenFlows(struct ipcPipe pipes, struct oidc_account* account,
   while ((current_flow = list_iterator_next(it))) {
     flowsTried++;
     if (strcaseequal(current_flow->val, FLOW_VALUE_REFRESH)) {
-      char* at = NULL;
-      if ((at = getAccessTokenUsingRefreshFlow(account, FORCE_NEW_TOKEN, scope,
-                                               account_getAudience(account),
-                                               pipes)) != NULL) {
+      struct access_token_result token = getAccessTokenUsingRefreshFlow(
+          account, FORCE_NEW_TOKEN, scope, account_getAudience(account), pipes);
+      if (token.access_token != NULL) {
         success = 1;
         account_setFlow(account, oidc_strcopy(FLOW_VALUE_REFRESH));
         if (only_at) {
-          account_setAccessToken(
-              account,
-              at);  // if only_at store the AT so we can send it back, we have
-                    // to store it manually because we provided manual scopes
-                    // (because offline_access removed). The token will be
-                    // correctly freed at the end when the account is freed.
+          // Transfer this result to the temporary generation account.
+          account_setAccessToken(account, token.access_token);
+          account_setTokenExpiresAt(account, token.expires_at);
+        } else {
+          secFree(token.access_token);
         }
         break;
       } else if (flows->len == 1) {
@@ -283,14 +281,16 @@ oidc_error_t addAccount(struct ipcPipe pipes, struct oidc_account* account,
     return oidc_errno;
   }
   if (!plain_load) {
-    if (getAccessTokenUsingRefreshFlow(account, FORCE_NEW_TOKEN, NULL, NULL,
-                                       pipes) == NULL) {
+    struct access_token_result token = getAccessTokenUsingRefreshFlow(
+        account, FORCE_NEW_TOKEN, NULL, NULL, pipes);
+    if (token.access_token == NULL) {
       account_setDeath(account,
                        time(NULL) + 10);  // with short timeout so no password
                                           // required for re-authentication
       db_addAccountEncrypted(account);
       return oidc_errno;
     }
+    secFree(token.access_token);
   }
   db_addAccountEncrypted(account);
   oidcd_handleUpdateIssuer(pipes, account_getIssuerUrl(account),
@@ -647,9 +647,9 @@ void oidcd_handleTokenIssuer(struct ipcPipe pipes, const char* issuer,
   if (account == NULL) {
     return;
   }
-  char* access_token = getAccessTokenUsingRefreshFlow(account, min_valid_period,
-                                                      scope, audience, pipes);
-  if (access_token == NULL) {
+  struct access_token_result token = getAccessTokenUsingRefreshFlow(
+      account, min_valid_period, scope, audience, pipes);
+  if (token.access_token == NULL) {
     char* help = getHelpWithAccountInfo(account);
     db_addAccountEncrypted(account);  // reencrypting
     if (help != NULL) {
@@ -661,12 +661,10 @@ void oidcd_handleTokenIssuer(struct ipcPipe pipes, const char* issuer,
     return;
   }
   db_addAccountEncrypted(account);  // reencrypting
-  ipc_writeToPipe(pipes, RESPONSE_STATUS_ACCESS, STATUS_SUCCESS, access_token,
-                  account_getIssuerUrl(account),
-                  account_getTokenExpiresAt(account));
-  if (strValid(scope)) {
-    secFree(access_token);
-  }
+  ipc_writeToPipe(pipes, RESPONSE_STATUS_ACCESS, STATUS_SUCCESS,
+                  token.access_token, account_getIssuerUrl(account),
+                  token.expires_at);
+  secFree(token.access_token);
 }
 
 void oidcd_handleReauthenticate(struct ipcPipe pipes, char* short_name,
@@ -728,9 +726,9 @@ void oidcd_handleToken(struct ipcPipe pipes, const char* short_name,
       return;
     }
   }
-  char* access_token = getAccessTokenUsingRefreshFlow(account, min_valid_period,
-                                                      scope, audience, pipes);
-  if (access_token == NULL) {
+  struct access_token_result token = getAccessTokenUsingRefreshFlow(
+      account, min_valid_period, scope, audience, pipes);
+  if (token.access_token == NULL) {
     char* help = getHelpWithAccountInfo(account);
     db_addAccountEncrypted(account);  // reencrypting
     if (help != NULL) {
@@ -742,12 +740,10 @@ void oidcd_handleToken(struct ipcPipe pipes, const char* short_name,
     return;
   }
   db_addAccountEncrypted(account);  // reencrypting
-  ipc_writeToPipe(pipes, RESPONSE_STATUS_ACCESS, STATUS_SUCCESS, access_token,
-                  account_getIssuerUrl(account),
-                  account_getTokenExpiresAt(account));
-  if (strValid(scope)) {
-    secFree(access_token);
-  }
+  ipc_writeToPipe(pipes, RESPONSE_STATUS_ACCESS, STATUS_SUCCESS,
+                  token.access_token, account_getIssuerUrl(account),
+                  token.expires_at);
+  secFree(token.access_token);
 }
 
 void oidcd_handleMytoken(struct ipcPipe pipes, const char* short_name,

@@ -1,7 +1,9 @@
 #include "oidc.h"
 
+#include <limits.h>
 #include <stdarg.h>
 #include <stddef.h>
+#include <stdint.h>
 #include <string.h>
 #include <time.h>
 
@@ -96,19 +98,71 @@ void defaultErrorHandling(const char* error, const char* error_description) {
   (TOKENPARSEMODE_SAVE_AT | TOKENPARSEMODE_RETURN_AT)
 #define TOKENPARSEMODE_DONTFREE_ID TOKENPARSEMODE_RETURN_ID
 
-char* parseTokenResponseCallbacks(
+/* Unknown or malformed expiry must never inherit another token's lifetime. */
+static unsigned long tokenResponseExpiresAt(const cJSON* response) {
+  const cJSON* expiry =
+      cJSON_GetObjectItemCaseSensitive(response, OIDC_KEY_EXPIRESIN);
+  unsigned long seconds = 0;
+  if (cJSON_IsNumber(expiry)) {
+    double value = expiry->valuedouble;
+    if (!(value >= 0 && value < (double)ULONG_MAX)) {
+      return 0;
+    }
+    seconds = (unsigned long)value;
+    if ((double)seconds != value) {
+      return 0;
+    }
+  } else if (cJSON_IsString(expiry)) {
+    const char* value = expiry->valuestring;
+    if (value == NULL || *value == '\0') {
+      return 0;
+    }
+    for (; *value; value++) {
+      if (*value < '0' || *value > '9') {
+        return 0;
+      }
+      unsigned long digit = (unsigned long)(*value - '0');
+      if (seconds > (ULONG_MAX - digit) / 10) {
+        return 0;
+      }
+      seconds = seconds * 10 + digit;
+    }
+  } else {
+    return 0;
+  }
+  time_t now = time(NULL);
+  if (now < 0 || (uintmax_t)now > ULONG_MAX ||
+      seconds > ULONG_MAX - (unsigned long)now) {
+    return 0;
+  }
+  unsigned long expires_at = (unsigned long)now + seconds;
+  // The cached expiry is read back as time_t, which can have a smaller range.
+  uintmax_t time_max = (uintmax_t)(time_t)-1;
+  if ((time_t)-1 < 0) {
+    time_max = UINTMAX_MAX >>
+        (sizeof(uintmax_t) * CHAR_BIT - sizeof(time_t) * CHAR_BIT + 1);
+  }
+  return (uintmax_t)expires_at > time_max ? 0 : expires_at;
+}
+
+static char* _parseTokenResponseCallbacks(
     const unsigned char mode, const char* res, struct oidc_account* a,
     void (*errorHandling)(const char*, const char*), struct ipcPipe pipes,
-    const unsigned char refreshFlow) {
+    const unsigned char refreshFlow, unsigned long* expires_at) {
+  if (expires_at) {
+    *expires_at = 0;
+  }
   if (mode & TOKENPARSEMODE_RETURN_ID && mode & TOKENPARSEMODE_RETURN_AT) {
     oidc_setInternalError("cannot return AT and ID token");
     return NULL;
   }
   INIT_KEY_VALUE(OIDC_KEY_ACCESSTOKEN, OIDC_KEY_SCOPE, OIDC_KEY_REFRESHTOKEN,
-                 MYTOKEN_KEY_MYTOKEN, OIDC_KEY_IDTOKEN, OIDC_KEY_EXPIRESIN,
+                 MYTOKEN_KEY_MYTOKEN, OIDC_KEY_IDTOKEN,
                  OIDC_KEY_ERROR, OIDC_KEY_ERROR_DESCRIPTION);
-  if (CALL_GETJSONVALUES(res) < 0) {
+  cJSON* response = stringToJson(res);
+  if (response == NULL || CALL_GETJSONVALUES_FROM_CJSON(response) < 0) {
     agent_log(ERROR, "Error while parsing json\n");
+    secFreeJson(response);
     SEC_FREE_KEY_VALUES();
     if (oidc_errno == OIDC_EJSONPARS) {
       oidc_errno = OIDC_EOPNOJSON;
@@ -116,19 +170,20 @@ char* parseTokenResponseCallbacks(
     return NULL;
   }
   KEY_VALUE_VARS(access_token, scope, refresh_token, mytoken, id_token,
-                 expires_in, error, error_description);
+                 error, error_description);
+  unsigned long token_expires_at = tokenResponseExpiresAt(response);
+  secFreeJson(response);
   if (_error || _error_description) {
     errorHandling(_error, _error_description);
     SEC_FREE_KEY_VALUES();
     return NULL;
   }
 
-  if (NULL != _expires_in) {
-    if (mode & TOKENPARSEMODE_SAVE_AT) {
-      account_setTokenExpiresAt(a, time(NULL) + strToInt(_expires_in));
-      agent_log(DEBUG, "expires_at is: %lu\n", account_getTokenExpiresAt(a));
-    }
-    secFree(_expires_in);
+  if (mode & TOKENPARSEMODE_RETURN_AT && !strValid(_access_token)) {
+    oidc_seterror("Token response did not contain an access token");
+    oidc_errno = OIDC_EOIDC;
+    SEC_FREE_KEY_VALUES();
+    return NULL;
   }
   if (strValid(_scope) && !refreshFlow) {
     // if we get a scope value back from the OP when the initial AT is obtained,
@@ -181,24 +236,45 @@ char* parseTokenResponseCallbacks(
     secFree(_mytoken);
   }
 
-  if (mode & TOKENPARSEMODE_SAVE_AT) {
+  if (mode & TOKENPARSEMODE_SAVE_AT && strValid(_access_token)) {
     account_setAccessToken(a, _access_token);
+    account_setTokenExpiresAt(a, token_expires_at);
+    agent_log(DEBUG, "expires_at is: %lu\n", token_expires_at);
   }
 
-  if (!(mode & TOKENPARSEMODE_DONTFREE_AT)) {
+  if (!(mode & TOKENPARSEMODE_DONTFREE_AT) || !strValid(_access_token)) {
     secFree(_access_token);
   }
   if (!(mode & TOKENPARSEMODE_DONTFREE_ID)) {
     secFree(_id_token);
   }
 
+  oidc_errno = OIDC_SUCCESS;
   if (mode & TOKENPARSEMODE_RETURN_AT) {
+    if (expires_at) {
+      *expires_at = token_expires_at;
+    }
     return _access_token;
   } else if (mode & TOKENPARSEMODE_RETURN_ID) {
     return _id_token;
   }
-  oidc_errno = OIDC_SUCCESS;
   return NULL;
+}
+
+char* parseTokenResponseCallbacks(
+    const unsigned char mode, const char* res, struct oidc_account* a,
+    void (*errorHandling)(const char*, const char*), struct ipcPipe pipes,
+    const unsigned char refreshFlow) {
+  return _parseTokenResponseCallbacks(mode, res, a, errorHandling, pipes,
+                                      refreshFlow, NULL);
+}
+
+char* parseTokenResponseWithExpiry(const unsigned char mode, const char* res,
+                                   struct oidc_account* a, struct ipcPipe pipes,
+                                   const unsigned char refreshFlow,
+                                   unsigned long* expires_at) {
+  return _parseTokenResponseCallbacks(mode, res, a, &defaultErrorHandling,
+                                      pipes, refreshFlow, expires_at);
 }
 
 char* parseTokenResponse(const unsigned char mode, const char* res,

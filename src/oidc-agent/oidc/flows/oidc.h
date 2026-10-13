@@ -18,6 +18,10 @@ char* generatePostDataFromList(list_t* list);
 char* parseTokenResponse(unsigned char mode, const char* res,
                          struct oidc_account* a, struct ipcPipe pipes,
                          unsigned char refreshFlow);
+char* parseTokenResponseWithExpiry(unsigned char mode, const char* res,
+                                   struct oidc_account* a, struct ipcPipe pipes,
+                                   unsigned char refreshFlow,
+                                   unsigned long* expires_at);
 char* parseTokenResponseCallbacks(
     unsigned char mode, const char* res, struct oidc_account* a,
     void (*errorHandling)(const char*, const char*), struct ipcPipe pipes,

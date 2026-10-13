@@ -6,6 +6,6 @@
 
 char* refreshFlow(unsigned char return_mode, struct oidc_account* p,
                   const char* scope, const char* audience,
-                  struct ipcPipe pipes);
+                  struct ipcPipe pipes, unsigned long* expires_at);
 
 #endif  // OIDC_REFRESH_H
